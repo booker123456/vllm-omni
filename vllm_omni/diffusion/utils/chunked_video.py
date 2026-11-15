@@ -370,6 +370,7 @@ class ChunkedVideoMP4Session:
         transfer_slots: int = 2,
         max_pending_bytes: int | None = _DEFAULT_MAX_PENDING_BYTES,
         skip_frames: int = 0,
+        profile_encoding: bool = False,
     ) -> None:
         if batch_frames <= 0:
             raise ValueError("batch_frames must be positive")
@@ -388,6 +389,7 @@ class ChunkedVideoMP4Session:
         self._skip_frames = skip_frames
         self._transfer_slots = transfer_slots
         self._max_pending_bytes = max_pending_bytes
+        self._profile_encoding = profile_encoding
         self._encoders: list[ChunkedMP4Encoder] = []
         self._output_shape: tuple[int, int, int] | None = None
         self._pending: list[torch.Tensor] = []
@@ -416,6 +418,7 @@ class ChunkedVideoMP4Session:
                         audio_sample_rate=self._audio_sample_rate,
                         max_pending=self._max_pending,
                         video_codec_options=self._video_codec_options,
+                        profile_encoding=self._profile_encoding,
                     )
                 )
         except BaseException:
@@ -462,6 +465,11 @@ class ChunkedVideoMP4Session:
     def frame_counts(self) -> list[int]:
         """Actual frame counts, complete after a successful finish()."""
         return [encoder.frame_count for encoder in self._encoders]
+
+    @property
+    def encoding_seconds(self) -> float:
+        """Sum of encoder durations, available after finish()."""
+        return sum(encoder.encoding_seconds for encoder in self._encoders)
 
     @property
     def ring(self) -> PinnedChunkRing | None:

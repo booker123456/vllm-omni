@@ -723,13 +723,18 @@ class MiniMaxH3Pipeline(
         encoder_block_attrs={"text_encoder": ("vision.blocks", "text_model.layers")},
         on_demand_component_paths=frozenset({"text_encoder", "video_vae", "audio_vae"}),
     )
+    _DECODE_PROFILER_TARGETS: ClassVar[tuple[str, ...]] = (
+        "decode",
+        "decode_to_mp4",
+        "video_vae.decode_latent",
+        "video_vae.decode_with_chunks",
+        "audio_vae.decode_latent",
+    )
     _PROFILER_TARGETS: ClassVar[list[str]] = [
         "encode_prompt",
         "_encode_local_media",
         "diffuse",
-        "decode",
-        "video_vae.decode_latent",
-        "audio_vae.decode_latent",
+        *_DECODE_PROFILER_TARGETS,
         "prepare_encode",
         "denoise_step",
         "post_decode",
@@ -984,9 +989,7 @@ class MiniMaxH3Pipeline(
             on_demand_component_paths.difference_update(("video_vae", "audio_vae"))
             self._vae_modules = []
             self._PROFILER_TARGETS = [
-                name
-                for name in self._PROFILER_TARGETS
-                if name not in {"decode", "video_vae.decode_latent", "audio_vae.decode_latent"}
+                name for name in self._PROFILER_TARGETS if name not in self._DECODE_PROFILER_TARGETS
             ]
         self._offload_plan = replace(
             self._offload_plan,
@@ -1318,6 +1321,7 @@ class MiniMaxH3Pipeline(
                     else None,
                 ),
                 lightvae_decoder_path=lightvae_decoder_path,
+                quantization_config=od_config.quantization_config,
                 allow_decoder_compile=vae_compile_allowed(
                     bool(od_config.enforce_eager),
                     current_omni_platform,
@@ -2454,6 +2458,7 @@ class MiniMaxH3Pipeline(
             decode_to_mp4 as decode_chunks_to_mp4,
         )
 
+        profile_encoding = getattr(self, "enable_diffusion_pipeline_profiler", False)
         session = None
         try:
             with self._component_on_device(self.audio_vae):
@@ -2474,6 +2479,7 @@ class MiniMaxH3Pipeline(
                     video_codec_options=video_codec_options,
                     crop=(height, width),
                     skip_frames=0 if trim is None else int(trim["frames"]),
+                    profile_encoding=profile_encoding,
                 )
                 start_error: BaseException | None = None
                 if self.video_vae.owns_chunk_output:
@@ -2512,6 +2518,8 @@ class MiniMaxH3Pipeline(
             return b""
         if len(videos) != 1:
             raise ValueError("MiniMax H3 chunked MP4 encoding currently expects one output per decoder")
+        if profile_encoding:
+            self.record_profiler_duration("cpu_encode_mp4", session.encoding_seconds)
         return videos[0]
 
     def _release_stage_cache(self) -> None:

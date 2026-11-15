@@ -234,23 +234,30 @@ def test_preencoded_video_bytes_preserve_metadata(mocker: MockerFixture):
     # Resolved frame count differs from anything the request asked for, so the
     # metadata has to come from the encoded stream rather than request defaults.
     preencoded = _make_test_video_bytes((32, 24), num_frames=7)
+    stage_durations = {
+        "MiniMaxH3DecoderPipeline.decode_to_mp4": 0.5,
+        "MiniMaxH3DecoderPipeline.video_vae.decode_with_chunks": 0.35,
+        "MiniMaxH3DecoderPipeline.audio_vae.decode_latent": 0.1,
+        "MiniMaxH3DecoderPipeline.cpu_encode_mp4": 0.2,
+    }
     artifacts = VideoGenerationArtifacts(
         videos=[preencoded],
         audios=[None],
         actions=[None],
         audio_sample_rate=24000,
         output_fps=24.0,
-        stage_durations={"decode": 0.5},
+        stage_durations=stage_durations,
         peak_memory_mb=123.0,
         metrics={"generation_time": 1.25},
     )
     mocker.patch.object(handler, "_run_and_extract", return_value=artifacts)
     encoder = mocker.patch("vllm_omni.entrypoints.openai.serving_video._encode_video_bytes")
+    log = mocker.patch("vllm_omni.entrypoints.openai.video_api_utils.logger.info")
     try:
         result = asyncio.run(handler.generate_video_bytes(VideoGenerationRequest(prompt="test"), "preencoded"))
         assert result == (
             preencoded,
-            {"decode": 0.5},
+            stage_durations,
             123.0,
             None,
             {
@@ -261,6 +268,8 @@ def test_preencoded_video_bytes_preserve_metadata(mocker: MockerFixture):
             },
         )
         encoder.assert_not_called()
+        assert log.call_args.args[1:3] == ("preencoded", "worker_preencode")
+        assert log.call_args.args[3:] == pytest.approx((350.0, 100.0, 200.0, 500.0))
     finally:
         handler.shutdown()
 

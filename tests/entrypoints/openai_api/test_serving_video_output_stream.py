@@ -97,6 +97,7 @@ def _build_test_app(
 
     class FakeStreamingVideoEncoder:
         encode_calls: list[int] = []
+        encoding_seconds = 0.0
 
         def encode(self, video, audio=None, *, audio_sample_rate=None):
             assert audio is None
@@ -104,9 +105,11 @@ def _build_test_app(
             del video
             idx = len(self.encode_calls)
             self.encode_calls.append(idx)
+            self.encoding_seconds += 0.01
             return streaming_chunks[idx][0]
 
         def close(self):
+            self.encoding_seconds += 0.02
             return final_chunk
 
     def _make_encoder(*, output_format, fps, video_codec_options=None):
@@ -138,6 +141,38 @@ def _build_test_app(
         await handler.handle_session(websocket)
 
     return app, handler, engine_client
+
+
+def test_h3_streaming_logs_cumulative_decode_and_encoder_flush(mocker: MockerFixture):
+    async def generate(*_args, **_kwargs):
+        for count in (1, 2):
+            yield OmniRequestOutput.from_diffusion(
+                request_id="video",
+                images=[_fake_video_frames()],
+                finished=count == 2,
+                stage_durations={
+                    "MiniMaxH3Pipeline.decode": count * 0.7,
+                    "MiniMaxH3Pipeline.video_vae.decode_latent": count * 0.4,
+                    "MiniMaxH3Pipeline.audio_vae.decode_latent": count * 0.2,
+                },
+            )
+
+    app, _, _ = _build_test_app(
+        mocker=mocker,
+        streaming_chunks=[(b"first", False), (b"last", True)],
+        mock_generate=generate,
+        final_chunk=b"trailer",
+    )
+    log = mocker.patch("vllm_omni.entrypoints.openai.video_api_utils.logger.info")
+    with TestClient(app) as client, client.websocket_connect("/v1/realtime/video") as ws:
+        ws.send_json({"type": "session.start", "prompt": "video"})
+        request_id = ws.receive_json()["request_id"]
+        assert [_receive_video_chunk(ws)[1] for _ in range(3)] == [b"first", b"last", b"trailer"]
+        assert ws.receive_json()["type"] == "session.done"
+
+    assert log.call_count == 1
+    assert log.call_args.args[1:3] == (request_id, "streaming")
+    assert log.call_args.args[3:] == pytest.approx((800.0, 400.0, 40.0, 1440.0))
 
 
 def test_playback_feedback_reaches_engine_and_releases_next_chunk(mocker: MockerFixture):

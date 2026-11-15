@@ -156,6 +156,19 @@ def test_early_audio_preserves_decoded_media_and_timestamps(encode_audio_first) 
     assert new_audio_timing == old_audio_timing
 
 
+def test_chunked_mp4_timing_excludes_input_wait(monkeypatch):
+    from vllm_omni.diffusion.utils import media_utils
+
+    # Encoder start, two queue gets (frames and sentinel), encoder finish.
+    clock = iter((1.0, 3.0, 8.0, 13.0, 16.0, 18.0))
+    monkeypatch.setattr(media_utils, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
+
+    encoder = ChunkedMP4Encoder(width=24, height=16, fps=24, profile_encoding=True)
+    encoder.push(_frames())
+    assert encoder.finish()
+    assert encoder.encoding_seconds == 9.0
+
+
 def test_chunked_mp4_is_byte_identical_to_whole_mux() -> None:
     # mbtree lookahead is not bit-stable across the pauses between chunks.
     # threads=1 leaves mbtree enabled; AMD CI (Lavf 62) then mismatches.

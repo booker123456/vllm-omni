@@ -30,8 +30,9 @@ import binascii
 import os
 import tempfile
 import threading
+import time
 from collections import deque
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from io import BytesIO
 from numbers import Integral
@@ -66,6 +67,46 @@ if TYPE_CHECKING:
 
 
 logger = init_logger(__name__)
+
+
+def log_h3_decode_timing(
+    stage_durations: Mapping[str, float],
+    *,
+    request_id: str,
+    mode: str,
+    cpu_encode_seconds: float | None = None,
+) -> None:
+    """Log H3 decode and MP4 timings when the diffusion profiler is enabled."""
+    for pipeline in ("MiniMaxH3Pipeline", "MiniMaxH3DecoderPipeline"):
+        audio = stage_durations.get(f"{pipeline}.audio_vae.decode_latent")
+        if audio is None:
+            continue
+        preencode = stage_durations.get(f"{pipeline}.decode_to_mp4")
+        if preencode is not None:
+            video = stage_durations.get(f"{pipeline}.video_vae.decode_with_chunks")
+            cpu = stage_durations.get(f"{pipeline}.cpu_encode_mp4")
+            total = preencode
+        else:
+            video = stage_durations.get(f"{pipeline}.video_vae.decode_latent")
+            decode = stage_durations.get(f"{pipeline}.decode")
+            if decode is None or cpu_encode_seconds is None:
+                continue
+            cpu = cpu_encode_seconds
+            # Decode and serving-side encoding run sequentially. Use the
+            # measured stages so worker/API handoff and model generation stay out.
+            total = decode + cpu
+        if video is not None and cpu is not None:
+            logger.info(
+                "MiniMax H3 decode+encode timing request_id=%s mode=%s "
+                "video_decode_ms=%.2f audio_decode_ms=%.2f cpu_encode_ms=%.2f total_ms=%.2f",
+                request_id,
+                "worker_preencode" if preencode is not None else mode,
+                video * 1000,
+                audio * 1000,
+                cpu * 1000,
+                total * 1000,
+            )
+            return
 
 
 DEFAULT_AUDIO_SAMPLE_RATE = 24_000
@@ -1007,6 +1048,7 @@ class FragmentedMP4VideoEncoder:
         self._fps = float(fps)
         self._video_codec_options = video_codec_options
         self._muxer: Any | None = None
+        self.encoding_seconds = 0.0
 
     def encode(
         self,
@@ -1025,6 +1067,7 @@ class FragmentedMP4VideoEncoder:
         """
         from vllm_omni.diffusion.utils.media_utils import FragmentedMP4Muxer
 
+        started_at = time.perf_counter()
         frames_u8 = _coerce_video_to_uint8_frames(video) if _has_frames(video) else None
         audio_np = _coerce_audio_to_numpy(audio) if audio is not None and _has_samples(audio) else None
         if audio_sample_rate is not None:
@@ -1059,6 +1102,7 @@ class FragmentedMP4VideoEncoder:
             chunk += self._muxer.mux_video_frames(frames_u8)
         if audio_np is not None:
             chunk += self._muxer.mux_audio_samples(audio_np)
+        self.encoding_seconds += time.perf_counter() - started_at
         return chunk
 
     @property
@@ -1069,7 +1113,10 @@ class FragmentedMP4VideoEncoder:
         """Close the underlying fMP4 muxer and return trailing bytes, if any."""
         if self._muxer is None:
             return b""
-        return self._muxer.close()
+        started_at = time.perf_counter()
+        trailer = self._muxer.close()
+        self.encoding_seconds += time.perf_counter() - started_at
+        return trailer
 
 
 StreamingVideoFormat = Literal["m4s"]

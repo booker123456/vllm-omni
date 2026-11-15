@@ -62,6 +62,7 @@ from vllm_omni.entrypoints.openai.video_api_utils import (
     _resolve_audio_sample_rate,
     create_streaming_video_encoder,
     decode_input_reference,
+    log_h3_decode_timing,
 )
 from vllm_omni.inputs.data import (
     OmniDiffusionSamplingParams,
@@ -852,10 +853,14 @@ class OmniStreamingVideoOutputHandler:
         pacing = request.streaming_pacing
         max_output_bytes = pacing.max_output_bytes if pacing is not None and pacing.enabled else None
         completed = False
+        stage_durations: dict[str, float] = {}
         try:
             async for result in self._iter_generation_outputs(prompt, gen_params, request_id, progress):
                 if result.error:
                     raise RuntimeError(str(result.error))
+                if result.stage_durations:
+                    # Step-execution profiles are cumulative for the request.
+                    stage_durations = result.stage_durations
                 for chunk, metadata in self._encode_generation_result(result, request_id, encoder):
                     if max_output_bytes is not None and len(chunk) > max_output_bytes:
                         raise ValueError("encoded streaming chunk exceeds streaming_pacing.max_output_bytes")
@@ -865,6 +870,13 @@ class OmniStreamingVideoOutputHandler:
             final_chunk = encoder.close()
             if max_output_bytes is not None and len(final_chunk or b"") > max_output_bytes:
                 raise ValueError("encoded streaming trailer exceeds streaming_pacing.max_output_bytes")
+            if stage_durations:
+                log_h3_decode_timing(
+                    stage_durations,
+                    request_id=request_id,
+                    mode="streaming",
+                    cpu_encode_seconds=encoder.encoding_seconds,
+                )
             if final_chunk:
                 yield (
                     final_chunk,

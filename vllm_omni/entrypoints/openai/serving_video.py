@@ -38,6 +38,7 @@ from vllm_omni.entrypoints.openai.video_api_utils import (
     _encode_video_bytes,
     _PlanarFrameConverter,
     encode_video_base64,
+    log_h3_decode_timing,
 )
 from vllm_omni.inputs.data import (
     OmniDiffusionSamplingParams,
@@ -677,8 +678,14 @@ class OmniOpenAIServingVideo:
             )
             for idx, video in enumerate(artifacts.videos)
         ]
-        _t_encode_ms = (time.perf_counter() - _t_encode_start) * 1000
-        logger.info("Video response encoding (MP4+base64): %.2f ms", _t_encode_ms)
+        encode_seconds = time.perf_counter() - _t_encode_start
+        logger.info("Video response encoding (MP4+base64): %.2f ms", encode_seconds * 1000)
+        log_h3_decode_timing(
+            artifacts.stage_durations,
+            request_id=reference_id,
+            mode="non_streaming_base64",
+            cpu_encode_seconds=encode_seconds,
+        )
         return VideoGenerationResponse(
             created=int(time.time()),
             data=video_data,
@@ -734,6 +741,7 @@ class OmniOpenAIServingVideo:
             video_bytes = artifacts.videos[0]
             _t_encode_ms = (time.perf_counter() - _t_encode_start) * 1000
             logger.info("Video response received pre-encoded MP4 bytes: %.2f ms", _t_encode_ms)
+            log_h3_decode_timing(artifacts.stage_durations, request_id=reference_id, mode="non_streaming")
             return (
                 video_bytes,
                 artifacts.stage_durations,
@@ -748,8 +756,14 @@ class OmniOpenAIServingVideo:
             frame_converter=self._video_frame_converter,
             **encoding_options,
         )
-        _t_encode_ms = (time.perf_counter() - _t_encode_start) * 1000
-        logger.info("Video response encoding (MP4 bytes): %.2f ms", _t_encode_ms)
+        encode_seconds = time.perf_counter() - _t_encode_start
+        logger.info("Video response encoding (MP4 bytes): %.2f ms", encode_seconds * 1000)
+        log_h3_decode_timing(
+            artifacts.stage_durations,
+            request_id=reference_id,
+            mode="non_streaming",
+            cpu_encode_seconds=encode_seconds,
+        )
         return video_bytes, artifacts.stage_durations, artifacts.peak_memory_mb, artifacts.actions[0], video_metadata
 
     @staticmethod

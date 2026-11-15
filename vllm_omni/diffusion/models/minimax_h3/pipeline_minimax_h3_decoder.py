@@ -60,7 +60,7 @@ class MiniMaxH3DecoderPipeline(
     _dit_modules: ClassVar[list[str]] = []
     _encoder_modules: ClassVar[list[str]] = []
     _vae_modules: ClassVar[list[str]] = ["video_vae", "audio_vae"]
-    _PROFILER_TARGETS: ClassVar[list[str]] = ["decode", "video_vae.decode_latent", "audio_vae.decode_latent"]
+    _PROFILER_TARGETS: ClassVar[list[str]] = list(MiniMaxH3Pipeline._DECODE_PROFILER_TARGETS)
 
     # Reuse decoding behavior to preserve regular and chunked MP4 output contracts.
     decode = MiniMaxH3Pipeline.decode
@@ -86,6 +86,7 @@ class MiniMaxH3DecoderPipeline(
             decode_only=True,
             trust_remote_code=od_config.trust_remote_code,
             lightvae_decoder_path=resolve_h3_lightvae_decoder_path(od_config.additional_config),
+            quantization_config=getattr(od_config, "quantization_config", None),
         )
         self.audio_vae = MiniMaxH3AudioVAE(
             str(model_path / "audio_vae"),

@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import queue
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping
 from fractions import Fraction
 from typing import Any, NamedTuple, cast
@@ -92,6 +93,7 @@ class ChunkedMP4Encoder:
         audio_codec: str = "aac",
         crf: str = "18",
         video_codec_options: dict[str, str] | None = None,
+        profile_encoding: bool = False,
     ) -> None:
         if max_pending <= 0:
             raise ValueError("max_pending must be positive")
@@ -107,9 +109,13 @@ class ChunkedMP4Encoder:
         self._aborted = False
         self._input_done = False
         self._state_lock = threading.Lock()
+        self._profile_encoding = profile_encoding
+        self._input_wait_seconds = 0.0
+        self.encoding_seconds = 0.0
 
         def run() -> None:
             frames = self._frames()
+            started_at = time.perf_counter() if self._profile_encoding else 0.0
             try:
                 self._result = mux_av_video_audio_bytes(
                     frames,
@@ -124,6 +130,8 @@ class ChunkedMP4Encoder:
                     video_codec_options=video_codec_options,
                     encode_audio_first=True,
                 )
+                if self._profile_encoding:
+                    self.encoding_seconds = time.perf_counter() - started_at - self._input_wait_seconds
             except BaseException as exc:
                 self._error = exc
                 # Closing is what runs the generator's cleanup and releases the
@@ -148,7 +156,11 @@ class ChunkedMP4Encoder:
 
     def _frames(self):
         while True:
+            wait_started_at = time.perf_counter() if self._profile_encoding else 0.0
             entry = self._queue.get()
+            if self._profile_encoding:
+                # Decoding and host transfer can leave the muxing thread idle.
+                self._input_wait_seconds += time.perf_counter() - wait_started_at
             if entry is _CHUNKED_MP4_DONE:
                 self._input_done = True
                 return

@@ -23,6 +23,12 @@ def _sync_if_useful() -> None:
         current_omni_platform.synchronize()
 
 
+def _record_duration(instance: Any, metric_name: str, duration: float) -> None:
+    logger.info("[DiffusionPipelineProfiler] %s took %.6fs", metric_name, duration)
+    with instance._profiler_lock:
+        instance._stage_durations[metric_name] = instance._stage_durations.get(metric_name, 0.0) + duration
+
+
 def profiler(name: str, func: Callable, instance: Any) -> Callable:
     """Timing a function execution."""
     metric_name = f"{name.rsplit('.', 1)[0]}.diffuse" if name.endswith(".denoise_step") else name
@@ -37,11 +43,7 @@ def profiler(name: str, func: Callable, instance: Any) -> Callable:
             return func(*args, **kwargs)
         finally:
             _sync_if_useful()
-            duration = time.perf_counter() - start_time
-            logger.info(f"[DiffusionPipelineProfiler] {metric_name} took {duration:.6f}s")
-            # record the profiling data: duration of stages
-            with instance._profiler_lock:
-                instance._stage_durations[metric_name] = instance._stage_durations.get(metric_name, 0.0) + duration
+            _record_duration(instance, metric_name, time.perf_counter() - start_time)
 
     return wrapper
 
@@ -127,3 +129,8 @@ class DiffusionPipelineProfilerMixin:
     def clear_profiler_records(self) -> None:
         with self._profiler_lock:
             self._stage_durations.clear()
+
+    def record_profiler_duration(self, stage: str, duration: float) -> None:
+        """Record an elapsed time measured outside the wrapper, in seconds."""
+        if self.enable_diffusion_pipeline_profiler:
+            _record_duration(self, f"{type(self).__name__}.{stage}", duration)
